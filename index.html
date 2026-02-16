@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Student Report Portal</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
+</script>
+
+
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #f4f6f9;
+  padding: 20px;
+}
+
+/* Header Section */
+.header {
+  width: 100%;
+  max-width: 900px;
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.letterhead {
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  margin-bottom: 10px;
+}
+
+.dept-title {
+  font-size: 20px;
+  font-weight: 800;
+  color: #333;
+}
+
+/* Card */
+.card {
+  background: #ffffff;
+  padding: 35px 30px;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+  text-align: center;
+}
+
+.card h1 {
+  font-size: 20px;
+  margin-bottom: 10px;
+  color: #222;
+}
+
+.card p {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 25px;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  font-size: 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  outline: none;
+  margin-bottom: 20px;
+  transition: 0.2s;
+}
+
+input:focus {
+  border-color: #000;
+}
+
+button {
+  width: 100%;
+  padding: 12px;
+  font-size: 16px;
+  font-weight: 800;
+  border: none;
+  border-radius: 8px;
+  background: #000;
+  color: white;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+button:hover {
+  opacity: 0.85;
+}
+
+.footer {
+  margin-top: 15px;
+  font-size: 12px;
+  color: #999;
+}
+
+#pdfCanvas {
+  display: block;
+  margin: 40px auto;
+  background: white;
+  border-radius: 10px;
+}
+.pdf-container {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  border-radius: 10px;
+}
+
+
+
+/* Responsive Adjustments */
+@media (max-width: 480px) {
+  .dept-title {
+    font-size: 16px;
+  }
+
+  .card {
+    padding: 25px 20px;
+  }
+
+  .card h1 {
+    font-size: 18px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+  <img class="letterhead" src="/jyothi_letter_head.png" alt="College Letterhead">
+  <div class="dept-title">
+    Department of Computer Science and Engineering
+  </div>
+</div>
+
+<div class="card">
+  <h1>Student Report Portal</h1>
+  <p>Enter your roll number to view your report</p>
+
+  <input type="number" id="rollInput" placeholder="Roll Number" />
+  <button onclick="openReport()">View Report</button>
+
+  <div class="footer">
+    Academic Year 2025–26
+  </div>
+</div>
+
+<button id="downloadBtn" onclick="downloadPage()" style="margin-top:10px; display:none; width:200px;">
+  Download Report
+</button>
+
+
+<div class="pdf-container">
+  <canvas id="pdfCanvas"></canvas>
+</div>
+
+
+
+<script>
+const FIRST_ROLL = 1;
+const TOTAL_PAGES = 63;
+const url = "report.pdf";
+let currentPageNumber = null;
+
+
+let pdfDoc = null;
+
+pdfjsLib.getDocument(url).promise.then(function(pdf) {
+  pdfDoc = pdf;
+});
+
+function openReport() {
+  document.getElementById("downloadBtn").style.display = "block";
+
+  const roll = parseInt(document.getElementById("rollInput").value);
+
+  if (!roll || roll < FIRST_ROLL) {
+    alert("Invalid roll number");
+    return;
+  }
+
+  const pageNumber = roll - FIRST_ROLL + 1;
+
+  if (pageNumber > TOTAL_PAGES) {
+    alert("Roll number not found");
+    return;
+  }
+  currentPageNumber = pageNumber;
+  renderPage(pageNumber);
+}
+
+function renderPage(pageNumber) {
+  if (!pdfDoc) return;
+
+  pdfDoc.getPage(pageNumber).then(function(page) {
+
+    const canvas = document.getElementById("pdfCanvas");
+    const context = canvas.getContext("2d");
+
+    const containerWidth = Math.min(900, window.innerWidth * 0.95);
+
+    const baseViewport = page.getViewport({ scale: 1 });
+
+    const scale = containerWidth / baseViewport.width;
+
+    // 🔥 Increase quality multiplier safely
+    const qualityMultiplier = 2;   // try 2 or 2.5 max
+    const deviceScale = window.devicePixelRatio || 1;
+
+    const renderScale = scale * deviceScale * qualityMultiplier;
+
+    const renderViewport = page.getViewport({ scale: renderScale });
+
+    canvas.width = renderViewport.width;
+    canvas.height = renderViewport.height;
+
+    // Keep visible size normal
+    canvas.style.width = containerWidth + "px";
+    canvas.style.height =
+      (renderViewport.height / (deviceScale * qualityMultiplier)) + "px";
+
+    context.setTransform(deviceScale * qualityMultiplier, 0, 0, deviceScale * qualityMultiplier, 0, 0);
+
+    page.render({
+      canvasContext: context,
+      viewport: page.getViewport({ scale: scale })
+    });
+  });
+}
+
+function downloadPage() {
+  if (!currentPageNumber) return;
+
+  const canvas = document.getElementById("pdfCanvas");
+
+  // Convert canvas to image
+  const imageURL = canvas.toDataURL("image/png");
+
+  const link = document.createElement("a");
+  link.href = imageURL;
+  link.download = `report_page_${currentPageNumber}.png`;
+
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+</script>
+
+
+</body>
+</html>
