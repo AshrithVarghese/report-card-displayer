@@ -200,19 +200,19 @@ function openReport() {
   let selectedFile = "";
   let pageNumber = 0;
 
-  if (roll >= 1 && roll <= 63) {
+  if (roll >= 1 && roll <= 60) {
     selectedFile = "report.pdf";
     pageNumber = roll;
   }
 
-  else if (roll >= 64 && roll <= 126) {
+  else if (roll >= 61 && roll <= 122) {
     selectedFile = "report1.pdf";
-    pageNumber = roll - 63;
+    pageNumber = roll - 60;
   }
 
-  else if (roll >= 127 && roll <= 194) {
+  else if (roll >= 123 && roll <= 189) {
     selectedFile = "report2.pdf";
-    pageNumber = roll - 126;
+    pageNumber = roll - 122;
   }
 
   currentPageNumber = pageNumber;
