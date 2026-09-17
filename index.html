@@ -248,7 +248,7 @@ button.view-btn:disabled {
 <!-- Semester Pills: dynamically generated from /api/semesters -->
 <div class="pills-container">
   <div id="semPills" class="pills"></div>
-    <!-- <div id="semStatus" class="sem-status">Loading semesters...</div> -->
+  <div id="semStatus" class="sem-status">Loading semesters...</div>
 </div>
 
 <div class="card">
@@ -336,11 +336,26 @@ function normalizeRollRanges(rawMap) {
   return out;
 }
 
+async function fetchJsonWithFallback(urls) {
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+      const data = await res.json();
+      console.log(`Loaded JSON from ${url}`, data);
+      return data;
+    } catch (e) {
+      lastErr = e;
+      console.warn(`Failed to fetch ${url}:`, e.message);
+    }
+  }
+  throw lastErr || new Error("All fallback URLs failed");
+}
+
 async function fetchConfig() {
   try {
-    const res = await fetch("/api/config");
-    if (!res.ok) throw new Error("config fetch failed");
-    const data = await res.json();
+    const data = await fetchJsonWithFallback(["/api/config", "/config.json"]);
     // Support both new { missingRolls, rollRanges } and legacy flat shapes
     const rawMissing = data.missingRolls ?? (data.semesters ? null : data);
     // If data has semesters unified, extract
@@ -449,19 +464,56 @@ function clearCanvas() {
   canvas.style.display = "none";
 }
 
-// Fetch semester list from server and render pills
+// Fetch semester list from server and render pills (with static fallback for Vercel/hosting)
 async function fetchSemesters() {
   const pillsEl = document.getElementById("semPills");
   const statusEl = document.getElementById("semStatus");
+  const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
   try {
     await fetchConfig();
-    const res = await fetch("/api/semesters");
-    if (!res.ok) throw new Error("Failed to fetch semesters");
-    semesters = await res.json();
+
+    // Try API first, then static manifest, then derive from config rollRanges
+    try {
+      semesters = await fetchJsonWithFallback(["/api/semesters", "/semesters.json"]);
+      // API returns array, static manifest also array; ensure array
+      if (!Array.isArray(semesters) && semesters && Array.isArray(semesters.value)) semesters = semesters.value;
+    } catch (e) {
+      console.warn("API/semesters.json failed, deriving from config:", e.message);
+      // Fallback: derive semester list from rollRanges + missingRolls keys
+      const keys = new Set([
+        ...Object.keys(rollRangesMap).map(k => k.replace(/\.pdf$/,'')),
+        ...Object.keys(missingRollsMap).map(k => k.replace(/\.pdf$/,''))
+      ]);
+      if (keys.size > 0) {
+        semesters = Array.from(keys)
+          .filter(k => k && k !== "…")
+          .sort((a,b) => {
+            const aNum = Number((a.match(/\d+/)||[])[0]);
+            const bNum = Number((b.match(/\d+/)||[])[0]);
+            if (!Number.isNaN(aNum) && !Number.isNaN(bNum) && aNum !== bNum) return aNum - bNum;
+            return a.localeCompare(b);
+          })
+          .map(name => {
+            const file = name.includes('.') ? name : `${name}.pdf`;
+            const properFile = file.toLowerCase().endsWith('.pdf') ? file : `${file}.pdf`;
+            // Try to preserve original casing from config keys
+            return { name: name.toUpperCase(), file: properFile, url: `semesters/${properFile}` };
+          });
+        // Deduplicate by file lower
+        const seen = new Set();
+        semesters = semesters.filter(s => {
+          const k = s.file.toLowerCase();
+          if (seen.has(k)) return false;
+          seen.add(k); return true;
+        });
+      } else {
+        throw e;
+      }
+    }
 
     if (!semesters || semesters.length === 0) {
-      statusEl.textContent = "No semester reports found. Add PDFs to the semesters folder.";
-      pillsEl.innerHTML = "";
+      setStatus("No semester reports found. Add PDFs to the semesters folder.");
+      if (pillsEl) pillsEl.innerHTML = "";
       return;
     }
 
@@ -470,8 +522,8 @@ async function fetchSemesters() {
     selectSemester(semesters[0]);
   } catch (err) {
     console.error(err);
-    statusEl.textContent = "Failed to load semesters. Please refresh.";
-    pillsEl.innerHTML = "";
+    setStatus("Failed to load semesters. Please refresh.");
+    if (pillsEl) pillsEl.innerHTML = "";
   }
 }
 
@@ -504,6 +556,7 @@ function updatePillActiveState() {
 
 function updateStatusText() {
   const statusEl = document.getElementById("semStatus");
+  if (!statusEl) return;
   if (!selectedSemester) {
     statusEl.textContent = `${semesters.length} semester(s) available`;
     return;
