@@ -69,7 +69,21 @@ module.exports = (req, res) => {
     res.status(200).end();
     return;
   }
-  const rootDir = path.join(__dirname, '..');
-  const data = getConfig(rootDir);
+  const candidates = [
+    path.join(__dirname, '..'),
+    process.cwd(),
+    path.join(process.cwd(), '..'),
+    __dirname
+  ];
+  let data = { missingRolls: {}, rollRanges: {} };
+  for (const r of candidates) {
+    const d = getConfig(r);
+    if (d && (Object.keys(d.missingRolls || {}).length > 0 || Object.keys(d.rollRanges || {}).length > 0)) {
+      data = d;
+      break;
+    }
+    // keep last non-empty or even empty but valid
+    if (d && !data.missingRolls) data = d;
+  }
   res.status(200).json(data);
 };

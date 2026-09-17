@@ -511,6 +511,36 @@ async function fetchSemesters() {
       }
     }
 
+    // If API returned empty (common on Vercel when PDFs not bundled in lambda), fallback to config-derived list
+    if (!semesters || semesters.length === 0) {
+      console.warn("Semesters empty from API/static, deriving from config as fallback");
+      const keys = new Set([
+        ...Object.keys(rollRangesMap).map(k => k.replace(/\.pdf$/,'')),
+        ...Object.keys(missingRollsMap).map(k => k.replace(/\.pdf$/,''))
+      ]);
+      if (keys.size > 0) {
+        semesters = Array.from(keys)
+          .filter(k => k && k !== "…")
+          .sort((a,b) => {
+            const aNum = Number((a.match(/\d+/)||[])[0]);
+            const bNum = Number((b.match(/\d+/)||[])[0]);
+            if (!Number.isNaN(aNum) && !Number.isNaN(bNum) && aNum !== bNum) return aNum - bNum;
+            return a.localeCompare(b);
+          })
+          .map(name => {
+            const file = name.includes('.') ? name : `${name}.pdf`;
+            const properFile = file.toLowerCase().endsWith('.pdf') ? file : `${file}.pdf`;
+            return { name: name.toUpperCase(), file: properFile, url: `semesters/${properFile}` };
+          });
+        const seen = new Set();
+        semesters = semesters.filter(s => {
+          const k = s.file.toLowerCase();
+          if (seen.has(k)) return false;
+          seen.add(k); return true;
+        });
+      }
+    }
+
     if (!semesters || semesters.length === 0) {
       setStatus("No semester reports found. Add PDFs to the semesters folder.");
       if (pillsEl) pillsEl.innerHTML = "";

@@ -1,0 +1,12 @@
+{
+  "buildCommand": "npm run build",
+  "functions": {
+    "api/semesters.js": {
+      "includeFiles": "semesters/**,semesters.json,config.json"
+    },
+    "api/config.js": {
+      "includeFiles": "config.json,semesters.json,semesters/**"
+    }
+  },
+  "cleanUrls": true
+}
