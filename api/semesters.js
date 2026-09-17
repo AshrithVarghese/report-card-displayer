@@ -1,7 +1,38 @@
 const fs = require('fs');
 const path = require('path');
 
+const HARDCODED_FALLBACK = [
+  { name: "S3-B", file: "S3-B.pdf", url: "semesters/S3-B.pdf" },
+  { name: "S5-A", file: "S5-A.pdf", url: "semesters/S5-A.pdf" },
+  { name: "S5-B", file: "S5-B.pdf", url: "semesters/S5-B.pdf" },
+  { name: "S5-C", file: "S5-C.pdf", url: "semesters/S5-C.pdf" }
+];
+
 function getSemesterFiles(rootDir) {
+  // 1) Most reliable: try semesters.json directly first (works even when PDFs not bundled in lambda)
+  try {
+    const manifestPaths = [
+      path.join(rootDir, 'semesters.json'),
+      path.join(process.cwd(), 'semesters.json'),
+      path.join(__dirname, '..', 'semesters.json'),
+      path.join(__dirname, '..', '..', 'semesters.json'),
+      path.join('/var/task', 'semesters.json')
+    ];
+    for (const mp of manifestPaths) {
+      if (fs.existsSync(mp)) {
+        const raw = fs.readFileSync(mp, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log('Using semesters.json primary', mp);
+          return parsed;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('semesters.json primary failed', e);
+  }
+
+  // 2) Try scanning filesystem
   const semestersDir = path.join(rootDir, 'semesters');
   const candidates = [];
   const seen = new Set();
@@ -34,64 +65,72 @@ function getSemesterFiles(rootDir) {
     console.error('Error scanning root dir', e);
   }
 
-  // Fallback to static semesters.json if scanning yielded nothing (Vercel lambda may not bundle PDFs)
-  if (candidates.length === 0) {
-    try {
-      const manifestPaths = [
-        path.join(rootDir, 'semesters.json'),
-        path.join(process.cwd(), 'semesters.json'),
-        path.join(__dirname, '..', 'semesters.json')
-      ];
-      for (const mp of manifestPaths) {
-        if (fs.existsSync(mp)) {
-          const raw = fs.readFileSync(mp, 'utf8');
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            console.log('Using semesters.json fallback', mp);
-            return parsed;
-          }
-        }
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => {
+      const aNum = Number((a.file.match(/\d+/) || [])[0]);
+      const bNum = Number((b.file.match(/\d+/) || [])[0]);
+      const aIsNum = !Number.isNaN(aNum);
+      const bIsNum = !Number.isNaN(bNum);
+      if (aIsNum && bIsNum) {
+        if (aNum !== bNum) return aNum - bNum;
+        return a.file.localeCompare(b.file);
       }
-    } catch (e) {
-      console.error('Fallback semesters.json failed', e);
-    }
-    // Last resort: derive from config.json rollRanges/missingRolls keys
-    try {
-      const configPaths = [path.join(rootDir, 'config.json'), path.join(process.cwd(), 'config.json')];
-      for (const cp of configPaths) {
-        if (fs.existsSync(cp)) {
-          const cfg = JSON.parse(fs.readFileSync(cp, 'utf8'));
-          const keys = new Set([
-            ...Object.keys(cfg.rollRanges || {}),
-            ...Object.keys(cfg.missingRolls || {}),
-            ...Object.keys(cfg.semesters || {})
-          ]);
-          if (keys.size > 0) {
-            const derived = Array.from(keys)
-              .filter(k => k && k !== '…')
-              .sort((a, b) => {
-                const aN = Number((a.match(/\d+/) || [])[0]);
-                const bN = Number((b.match(/\d+/) || [])[0]);
-                if (!isNaN(aN) && !isNaN(bN) && aN !== bN) return aN - bN;
-                return a.localeCompare(b);
-              })
-              .map(k => {
-                const name = k.replace(/\.pdf$/i, '');
-                const file = name.includes('.') ? name : `${name}.pdf`;
-                const properFile = file.toLowerCase().endsWith('.pdf') ? file : `${file}.pdf`;
-                return { name: name.toUpperCase(), file: properFile, url: `semesters/${properFile}` };
-              });
-            if (derived.length > 0) {
-              console.log('Using config-derived fallback', derived);
-              return derived;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Config-derived fallback failed', e);
-    }
+      if (aIsNum) return -1;
+      if (bIsNum) return 1;
+      return a.file.localeCompare(b.file);
+    });
+    return candidates.map(({ file, dir }) => ({
+      name: path.basename(file, path.extname(file)),
+      file: file,
+      url: dir ? `${dir}/${file}` : file
+    }));
   }
+
+  // 3) Fallback: derive from config.json rollRanges/missingRolls keys
+  try {
+    const configPaths = [
+      path.join(rootDir, 'config.json'),
+      path.join(process.cwd(), 'config.json'),
+      path.join(__dirname, '..', 'config.json'),
+      path.join('/var/task', 'config.json')
+    ];
+    for (const cp of configPaths) {
+      if (fs.existsSync(cp)) {
+        const cfg = JSON.parse(fs.readFileSync(cp, 'utf8'));
+        const keys = new Set([
+          ...Object.keys(cfg.rollRanges || {}),
+          ...Object.keys(cfg.missingRolls || {}),
+          ...Object.keys(cfg.semesters || {})
+        ]);
+        if (keys.size > 0) {
+          const derived = Array.from(keys)
+            .filter(k => k && k !== '…')
+            .sort((a, b) => {
+              const aN = Number((a.match(/\d+/) || [])[0]);
+              const bN = Number((b.match(/\d+/) || [])[0]);
+              if (!isNaN(aN) && !isNaN(bN) && aN !== bN) return aN - bN;
+              return a.localeCompare(b);
+            })
+            .map(k => {
+              const name = k.replace(/\.pdf$/i, '');
+              const file = name.includes('.') ? name : `${name}.pdf`;
+              const properFile = file.toLowerCase().endsWith('.pdf') ? file : `${file}.pdf`;
+              return { name: name.toUpperCase(), file: properFile, url: `semesters/${properFile}` };
+            });
+          if (derived.length > 0) {
+            console.log('Using config-derived fallback', derived);
+            return derived;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Config-derived fallback failed', e);
+  }
+
+  // 4) Ultimate hardcoded fallback - never return []
+  console.warn('Using hardcoded fallback');
+  return HARDCODED_FALLBACK;
 
   candidates.sort((a, b) => {
     const aNum = Number((a.file.match(/\d+/) || [])[0]);

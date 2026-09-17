@@ -1,5 +1,6 @@
 {
   "buildCommand": "npm run build",
+  "outputDirectory": ".",
   "functions": {
     "api/semesters.js": {
       "includeFiles": "semesters/**,semesters.json,config.json"
