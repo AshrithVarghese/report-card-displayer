@@ -10,7 +10,6 @@
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
 </script>
 
-
 <style>
 * {
   margin: 0;
@@ -47,6 +46,65 @@ body {
   font-size: 20px;
   font-weight: 800;
   color: #333;
+}
+
+/* Semester Pills */
+.pills-container {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 10px;
+  width: 100%;
+}
+
+.pill {
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #333;
+  user-select: none;
+}
+
+.pill:hover {
+  border-color: #000;
+  background: #f6f8fa;
+  transform: translateY(-1px);
+}
+
+.pill.active {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.sem-status {
+  font-size: 13px;
+  color: #666;
+  min-height: 18px;
+  text-align: center;
+}
+
+.loading-text {
+  font-size: 14px;
+  color: #666;
+  text-align: center;
+  margin-top: 10px;
 }
 
 /* Card */
@@ -87,7 +145,7 @@ input:focus {
   border-color: #000;
 }
 
-button {
+button.view-btn {
   width: 100%;
   padding: 12px;
   font-size: 16px;
@@ -100,8 +158,13 @@ button {
   transition: 0.2s;
 }
 
-button:hover {
+button.view-btn:hover {
   opacity: 0.85;
+}
+
+button.view-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .footer {
@@ -124,7 +187,37 @@ button:hover {
   border-radius: 10px;
 }
 
+#downloadBtn {
+  margin-top: 16px;
+  display: none;
+  width: 200px;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  background: #000;
+  color: #fff;
+  cursor: pointer;
+}
 
+#downloadBtn:hover {
+  opacity: 0.85;
+}
+
+.error-box {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  color: #664d03;
+  font-size: 14px;
+  text-align: center;
+  display: none;
+  max-width: 420px;
+  width: 100%;
+}
 
 /* Responsive Adjustments */
 @media (max-width: 480px) {
@@ -152,85 +245,367 @@ button:hover {
   </div>
 </div>
 
+<!-- Semester Pills: dynamically generated from /api/semesters -->
+<div class="pills-container">
+  <div id="semPills" class="pills"></div>
+    <!-- <div id="semStatus" class="sem-status">Loading semesters...</div> -->
+</div>
+
 <div class="card">
   <h1>Student Report Portal</h1>
-  <p>Enter your roll number to view your report</p>
+  <p>Select a semester above and enter your roll number to view your report</p>
 
   <input type="number" id="rollInput" placeholder="Roll Number" />
-  <button onclick="openReport()">View Report</button>
+  <button class="view-btn" id="viewBtn" onclick="openReport()">View Report</button>
 
   <div class="footer">
-    Academic Year 2025–26
+    Academic Year 2026-27
   </div>
 </div>
 
-<button id="downloadBtn" onclick="downloadPage()" style="margin-top:10px; display:none; width:200px;">
+<button id="downloadBtn" onclick="downloadPage()">
   Download Report
 </button>
 
+<div id="errorBox" class="error-box"></div>
 
 <div class="pdf-container">
   <canvas id="pdfCanvas"></canvas>
 </div>
 
+<div id="loadingIndicator" class="loading-text" style="display:none;">Loading PDF...</div>
 
 
 <script>
 const FIRST_ROLL = 1;
-const TOTAL_PAGES = 63;
-const url = "report.pdf";
-let currentPageNumber = null;
 
-
+let semesters = [];
+let selectedSemester = null;
 let pdfDoc = null;
+let currentPageNumber = null; // pdf page number after missing offset
+let currentRollNumber = null; // original roll entered
+let currentPdfUrl = null;
+let missingRollsMap = {}; // normalized lowerKey -> sorted array e.g. { "s5-a": [32] }
+let rollRangesMap = {}; // normalized lowerKey -> { start, end }
 
-pdfjsLib.getDocument(url).promise.then(function(pdf) {
-  pdfDoc = pdf;
-});
+function normalizeMissingConfig(rawMap) {
+  const out = {};
+  if (!rawMap || typeof rawMap !== 'object') return out;
+  for (const [key, val] of Object.entries(rawMap)) {
+    if (!Array.isArray(val)) continue;
+    const normKey = String(key).trim().toLowerCase();
+    const arr = [...new Set(val.map(Number).filter(n => Number.isFinite(n)))].sort((a,b)=>a-b);
+    out[normKey] = arr;
+    // also store base name without extension for convenience
+    const base = normKey.replace(/\.pdf$/,'');
+    out[base] = arr;
+  }
+  return out;
+}
+
+function normalizeRollRanges(rawMap) {
+  const out = {};
+  if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return out;
+  for (const [key, val] of Object.entries(rawMap)) {
+    const normKey = String(key).trim().toLowerCase();
+    let start = null, end = null;
+    if (Array.isArray(val) && val.length >= 2) {
+      start = Number(val[0]); end = Number(val[1]);
+    } else if (val && typeof val === 'object') {
+      const s = val.start ?? val.startRoll ?? val.firstRoll ?? val.from;
+      const e = val.end ?? val.endRoll ?? val.lastRoll ?? val.to;
+      if (s != null) start = Number(s);
+      if (e != null) end = Number(e);
+    } else if (typeof val === 'number') {
+      // not expected
+      continue;
+    }
+    if (start != null && Number.isNaN(start)) start = null;
+    if (end != null && Number.isNaN(end)) end = null;
+    if (start == null && end == null) continue;
+    // ensure start <= end if both present
+    if (start != null && end != null && start > end) {
+      const tmp = start; start = end; end = tmp;
+    }
+    out[normKey] = {};
+    if (start != null) out[normKey].start = start;
+    if (end != null) out[normKey].end = end;
+    const base = normKey.replace(/\.pdf$/,'');
+    out[base] = out[normKey];
+  }
+  return out;
+}
+
+async function fetchConfig() {
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) throw new Error("config fetch failed");
+    const data = await res.json();
+    // Support both new { missingRolls, rollRanges } and legacy flat shapes
+    const rawMissing = data.missingRolls ?? (data.semesters ? null : data);
+    // If data has semesters unified, extract
+    let extraMissing = {};
+    let extraRanges = {};
+    if (data.semesters && typeof data.semesters === 'object') {
+      for (const [k,v] of Object.entries(data.semesters)) {
+        if (v && typeof v === 'object') {
+          if (Array.isArray(v.missing ?? v.missingRolls)) extraMissing[k] = v.missing ?? v.missingRolls;
+          const s = v.start ?? v.startRoll ?? v.firstRoll ?? v.from;
+          const e = v.end ?? v.endRoll ?? v.lastRoll ?? v.to;
+          if (s != null || e != null) extraRanges[k] = { start: s, end: e };
+        }
+      }
+    }
+    const mergedMissing = { ...(data.missingRolls || {}), ...extraMissing };
+    const mergedRanges = { ...(data.rollRanges || {}), ...extraRanges };
+
+    // If still empty and data is flat array map, treat as missing
+    if (Object.keys(mergedMissing).length === 0 && data && typeof data === 'object' && !data.missingRolls && !data.rollRanges && !data.semesters) {
+      const isFlat = Object.values(data).every(v => Array.isArray(v));
+      if (isFlat) {
+        missingRollsMap = normalizeMissingConfig(data);
+        rollRangesMap = {};
+        console.log("Config loaded (flat missing):", missingRollsMap);
+        return;
+      }
+    }
+
+    missingRollsMap = normalizeMissingConfig(mergedMissing);
+    rollRangesMap = normalizeRollRanges(mergedRanges);
+    console.log("Missing rolls loaded:", missingRollsMap);
+    console.log("Roll ranges loaded:", rollRangesMap);
+  } catch (err) {
+    console.warn("Could not load config, assuming no missing/ ranges:", err.message);
+    missingRollsMap = {};
+    rollRangesMap = {};
+  }
+}
+
+function getMissingForSemester(sem) {
+  if (!sem) return [];
+  const candidates = [
+    String(sem.name || '').toLowerCase(),
+    String(sem.file || '').toLowerCase(),
+    String(sem.name || '').toLowerCase().replace(/\.pdf$/,''),
+    String(sem.file || '').toLowerCase().replace(/\.pdf$/,'')
+  ];
+  for (const c of candidates) {
+    if (missingRollsMap[c]) return missingRollsMap[c];
+  }
+  return [];
+}
+
+function getRollRangeForSemester(sem) {
+  if (!sem) return null;
+  const candidates = [
+    String(sem.name || '').toLowerCase(),
+    String(sem.file || '').toLowerCase(),
+    String(sem.name || '').toLowerCase().replace(/\.pdf$/,''),
+    String(sem.file || '').toLowerCase().replace(/\.pdf$/,'')
+  ];
+  for (const c of candidates) {
+    if (rollRangesMap[c]) return rollRangesMap[c];
+  }
+  return null;
+}
+
+function isMissingRoll(missingArr, roll) {
+  return missingArr.includes(roll);
+}
+
+function rollToPage(roll, missingArr, range) {
+  const start = range && range.start != null ? range.start : 1;
+  // Count how many missing roll numbers are < roll and within the configured range
+  let countBefore = 0;
+  for (const m of missingArr) {
+    if (m >= roll) break; // array sorted
+    if (range) {
+      if (range.start != null && m < range.start) continue;
+      if (range.end != null && m > range.end) continue;
+    }
+    if (m < roll) countBefore++;
+  }
+  return (roll - start + 1) - countBefore;
+}
+
+function showError(msg) {
+  const box = document.getElementById("errorBox");
+  box.textContent = msg;
+  box.style.display = "block";
+  // hide canvas? keep but clear
+  document.getElementById("downloadBtn").style.display = "none";
+}
+
+function clearError() {
+  const box = document.getElementById("errorBox");
+  box.style.display = "none";
+  box.textContent = "";
+}
+
+function clearCanvas() {
+  const canvas = document.getElementById("pdfCanvas");
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0,0,canvas.width, canvas.height);
+  canvas.style.display = "none";
+}
+
+// Fetch semester list from server and render pills
+async function fetchSemesters() {
+  const pillsEl = document.getElementById("semPills");
+  const statusEl = document.getElementById("semStatus");
+  try {
+    await fetchConfig();
+    const res = await fetch("/api/semesters");
+    if (!res.ok) throw new Error("Failed to fetch semesters");
+    semesters = await res.json();
+
+    if (!semesters || semesters.length === 0) {
+      statusEl.textContent = "No semester reports found. Add PDFs to the semesters folder.";
+      pillsEl.innerHTML = "";
+      return;
+    }
+
+    renderPills();
+    // Auto-select first semester
+    selectSemester(semesters[0]);
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "Failed to load semesters. Please refresh.";
+    pillsEl.innerHTML = "";
+  }
+}
+
+function renderPills() {
+  const pillsEl = document.getElementById("semPills");
+  pillsEl.innerHTML = "";
+
+  semesters.forEach((sem) => {
+    const btn = document.createElement("button");
+    btn.className = "pill";
+    btn.textContent = sem.name; // e.g., S3-B, S5-A
+    btn.title = sem.file;
+    btn.dataset.file = sem.file;
+    btn.onclick = () => selectSemester(sem);
+    pillsEl.appendChild(btn);
+  });
+
+  updatePillActiveState();
+}
+
+function updatePillActiveState() {
+  const pillsEl = document.getElementById("semPills");
+  const buttons = pillsEl.querySelectorAll(".pill");
+  buttons.forEach((btn) => {
+    const isActive = selectedSemester && btn.dataset.file === selectedSemester.file;
+    btn.classList.toggle("active", isActive);
+  });
+  updateStatusText();
+}
+
+function updateStatusText() {
+  const statusEl = document.getElementById("semStatus");
+  if (!selectedSemester) {
+    statusEl.textContent = `${semesters.length} semester(s) available`;
+    return;
+  }
+  const missing = getMissingForSemester(selectedSemester);
+  const range = getRollRangeForSemester(selectedSemester);
+  let text = `Selected: ${selectedSemester.name} (${selectedSemester.file})`;
+  if (range && (range.start != null || range.end != null)) {
+    const s = range.start != null ? range.start : "…";
+    const e = range.end != null ? range.end : "…";
+    text += ` • Rolls ${s}–${e}`;
+  }
+  if (missing.length > 0) {
+    text += ` • ${missing.length} missing: ${missing.join(", ")}`;
+  } else {
+    text += ` • ${semesters.length} semester(s) available`;
+  }
+  statusEl.textContent = text;
+}
+
+function selectSemester(sem) {
+  selectedSemester = sem;
+  updatePillActiveState();
+  clearError();
+  console.log("Selected semester:", sem, "missing:", getMissingForSemester(sem));
+}
 
 function openReport() {
+  const rollInput = document.getElementById("rollInput");
+  const roll = parseInt(rollInput.value, 10);
 
-  const roll = parseInt(document.getElementById("rollInput").value);
-
-  if (!roll || roll < FIRST_ROLL || roll > 194) {
-    alert("Invalid roll number");
+  if (!selectedSemester) {
+    alert("Please select a semester first");
     return;
   }
 
-  let selectedFile = "";
-  let pageNumber = 0;
-
-  if (roll >= 1 && roll <= 63) {
-    selectedFile = "report.pdf";
-    pageNumber = roll;
+  if (!roll || roll < FIRST_ROLL) {
+    alert("Please enter a valid roll number");
+    return;
   }
 
-  else if (roll >= 64 && roll <= 126) {
-    selectedFile = "report1.pdf";
-    pageNumber = roll - 63;
+  const missing = getMissingForSemester(selectedSemester);
+  const range = getRollRangeForSemester(selectedSemester);
+
+  // 1) Range validation — inform not available outside start/end
+  if (range) {
+    if (range.start != null && roll < range.start) {
+      clearCanvas();
+      showError(`Report not available`);
+      document.getElementById("loadingIndicator").style.display = "none";
+      return;
+    }
+    if (range.end != null && roll > range.end) {
+      clearCanvas();
+      showError(`Report not available`);
+      document.getElementById("loadingIndicator").style.display = "none";
+      return;
+    }
   }
 
-  else if (roll >= 127 && roll <= 194) {
-    selectedFile = "report2.pdf";
-    pageNumber = roll - 126;
+  if (isMissingRoll(missing, roll)) {
+    clearCanvas();
+    showError(`Report not available`);
+    document.getElementById("loadingIndicator").style.display = "none";
+    return;
   }
 
-  currentPageNumber = pageNumber;
-  document.getElementById("downloadBtn").style.display = "block";
+  const page = rollToPage(roll, missing, range);
 
-  loadPDF(selectedFile, pageNumber);
+  // Use file with that sem name
+  const fileUrl = selectedSemester.url || `semesters/${selectedSemester.file}`;
+  currentPdfUrl = fileUrl;
+  currentRollNumber = roll;
+  currentPageNumber = page;
+
+  clearError();
+  document.getElementById("loadingIndicator").style.display = "block";
+  document.getElementById("downloadBtn").style.display = "none";
+  document.getElementById("pdfCanvas").style.display = "block";
+
+  console.log(`Roll ${roll} -> page ${page} (missing ${missing.join(',')}) range ${range ? range.start+'-'+range.end : 'any'} in ${fileUrl}`);
+  loadPDF(fileUrl, page, roll, missing, range);
 }
 
-function loadPDF(file, pageNumber) {
-
+function loadPDF(file, pageNumber, originalRoll, missingArr, range) {
+  pdfDoc = null;
   pdfjsLib.getDocument(file).promise.then(function(pdf) {
-
     pdfDoc = pdf;
 
-    renderPage(pageNumber);
+    if (pageNumber < 1 || pageNumber > pdf.numPages) {
+      document.getElementById("loadingIndicator").style.display = "none";
+      clearCanvas();
+      showError(`Report not available`);
+      return;
+    }
 
+    renderPage(pageNumber);
+    document.getElementById("downloadBtn").style.display = "block";
+    document.getElementById("loadingIndicator").style.display = "none";
   }).catch(function(error) {
-    alert("Error loading PDF file");
+    document.getElementById("loadingIndicator").style.display = "none";
+    showError("Error loading PDF file: " + file);
     console.error(error);
   });
 }
@@ -239,7 +614,6 @@ function renderPage(pageNumber) {
   if (!pdfDoc) return;
 
   pdfDoc.getPage(pageNumber).then(function(page) {
-
     const canvas = document.getElementById("pdfCanvas");
     const context = canvas.getContext("2d");
 
@@ -249,8 +623,7 @@ function renderPage(pageNumber) {
 
     const scale = containerWidth / baseViewport.width;
 
-    // 🔥 Increase quality multiplier safely
-    const qualityMultiplier = 2;   // try 2 or 2.5 max
+    const qualityMultiplier = 2;
     const deviceScale = window.devicePixelRatio || 1;
 
     const renderScale = scale * deviceScale * qualityMultiplier;
@@ -260,39 +633,60 @@ function renderPage(pageNumber) {
     canvas.width = renderViewport.width;
     canvas.height = renderViewport.height;
 
-    // Keep visible size normal
     canvas.style.width = containerWidth + "px";
     canvas.style.height =
       (renderViewport.height / (deviceScale * qualityMultiplier)) + "px";
 
     context.setTransform(deviceScale * qualityMultiplier, 0, 0, deviceScale * qualityMultiplier, 0, 0);
 
+    const viewport = page.getViewport({ scale: scale });
     page.render({
       canvasContext: context,
-      viewport: page.getViewport({ scale: scale })
+      viewport: viewport
     });
+
+    canvas.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
 function downloadPage() {
-  if (!currentPageNumber) return;
+  if (!currentPageNumber || !pdfDoc || !currentRollNumber) return;
 
   const canvas = document.getElementById("pdfCanvas");
 
-  // Convert canvas to image
   const imageURL = canvas.toDataURL("image/png");
 
   const link = document.createElement("a");
+  const baseName = selectedSemester ? selectedSemester.name : "report";
   link.href = imageURL;
-  link.download = `report_page_${currentPageNumber}.png`;
+  link.download = `${baseName}_roll_${currentRollNumber}_page_${currentPageNumber}.png`;
 
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
 }
 
-</script>
+// Allow Enter key to trigger View Report
+document.getElementById("rollInput").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") {
+    openReport();
+  }
+});
 
+// Handle window resize -> re-render current page if exists
+let resizeTimeout;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    if (pdfDoc && currentPageNumber) {
+      renderPage(currentPageNumber);
+    }
+  }, 300);
+});
+
+// Initial load
+fetchSemesters();
+</script>
 
 </body>
 </html>
