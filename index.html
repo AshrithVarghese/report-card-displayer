@@ -355,7 +355,53 @@ async function fetchJsonWithFallback(urls) {
 
 async function fetchConfig() {
   try {
-    const data = await fetchJsonWithFallback(["/api/config", "/config.json"]);
+    // Try both endpoints - api may return empty on Vercel if not bundled, so merge with static
+    let apiData = null;
+    let staticData = null;
+    try {
+      const res = await fetch("/api/config");
+      if (res.ok) apiData = await res.json();
+      console.log("API config:", apiData);
+    } catch (e) {
+      console.warn("API config fetch failed:", e.message);
+    }
+    try {
+      const res2 = await fetch("/config.json");
+      if (res2.ok) staticData = await res2.json();
+      console.log("Static config.json:", staticData);
+    } catch (e) {
+      console.warn("Static config fetch failed:", e.message);
+    }
+
+    // Choose best data: if api has content, merge both (api + static, static wins for missing keys)
+    // If api is empty, use static
+    const isApiEmpty = !apiData || (
+      (!apiData.missingRolls || Object.keys(apiData.missingRolls).length === 0) &&
+      (!apiData.rollRanges || Object.keys(apiData.rollRanges).length === 0) &&
+      (!apiData.semesters || Object.keys(apiData.semesters).length === 0) &&
+      Object.keys(apiData).filter(k => Array.isArray(apiData[k])).length === 0
+    );
+    let data = null;
+    if (!isApiEmpty && apiData) {
+      // Merge api and static if both exist and static has data not in api
+      if (staticData && !isApiEmpty) {
+        const mergedMissing = { ...(apiData.missingRolls || {}), ...(staticData.missingRolls || {}) };
+        const mergedRanges = { ...(apiData.rollRanges || {}), ...(staticData.rollRanges || {}) };
+        // If static has keys api lacks, enrich
+        data = { missingRolls: mergedMissing, rollRanges: mergedRanges };
+        // If api was flat and static is structured, prefer static
+        if (Object.keys(mergedMissing).length === 0 && Object.keys(mergedRanges).length === 0) {
+          data = staticData;
+        }
+      } else {
+        data = apiData;
+      }
+    } else {
+      data = staticData || apiData;
+    }
+
+    if (!data) throw new Error("No config data from api or static");
+
     // Support both new { missingRolls, rollRanges } and legacy flat shapes
     const rawMissing = data.missingRolls ?? (data.semesters ? null : data);
     // If data has semesters unified, extract
@@ -389,6 +435,11 @@ async function fetchConfig() {
     rollRangesMap = normalizeRollRanges(mergedRanges);
     console.log("Missing rolls loaded:", missingRollsMap);
     console.log("Roll ranges loaded:", rollRangesMap);
+    
+    // If still empty after all, warn - this would cause missing logic to be skipped
+    if (Object.keys(missingRollsMap).length === 0 && Object.keys(rollRangesMap).length === 0) {
+      console.warn("Config loaded but empty - check config.json contents");
+    }
   } catch (err) {
     console.warn("Could not load config, assuming no missing/ ranges:", err.message);
     missingRollsMap = {};

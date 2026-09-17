@@ -1,6 +1,20 @@
 const fs = require('fs');
 const path = require('path');
 
+// Bundled fallback for Vercel - statically analyzable
+let bundledSemesters = null;
+try {
+  bundledSemesters = require('../semesters.json');
+} catch (e) {
+  try { bundledSemesters = require('../../semesters.json'); } catch (e2) {}
+}
+let bundledConfigForFallback = null;
+try {
+  bundledConfigForFallback = require('../config.json');
+} catch (e) {
+  try { bundledConfigForFallback = require('../../config.json'); } catch (e2) {}
+}
+
 const HARDCODED_FALLBACK = [
   { name: "S3-B", file: "S3-B.pdf", url: "semesters/S3-B.pdf" },
   { name: "S5-A", file: "S5-A.pdf", url: "semesters/S5-A.pdf" },
@@ -9,7 +23,13 @@ const HARDCODED_FALLBACK = [
 ];
 
 function getSemesterFiles(rootDir) {
-  // 1) Most reliable: try semesters.json directly first (works even when PDFs not bundled in lambda)
+  // 0) Bundled require - most reliable on Vercel (static analysis)
+  if (Array.isArray(bundledSemesters) && bundledSemesters.length > 0) {
+    console.log('Using bundledSemesters');
+    return bundledSemesters;
+  }
+
+  // 1) Try semesters.json via fs (works even when PDFs not bundled in lambda)
   try {
     const manifestPaths = [
       path.join(rootDir, 'semesters.json'),
@@ -128,29 +148,43 @@ function getSemesterFiles(rootDir) {
     console.error('Config-derived fallback failed', e);
   }
 
-  // 4) Ultimate hardcoded fallback - never return []
+  // 4) Try bundled config as well for derive
+  if (bundledConfigForFallback) {
+    try {
+      const cfg = bundledConfigForFallback;
+      const keys = new Set([
+        ...Object.keys(cfg.rollRanges || {}),
+        ...Object.keys(cfg.missingRolls || {}),
+        ...Object.keys(cfg.semesters || {})
+      ]);
+      if (keys.size > 0) {
+        const derived = Array.from(keys)
+          .filter(k => k && k !== '…')
+          .sort((a, b) => {
+            const aN = Number((a.match(/\d+/) || [])[0]);
+            const bN = Number((b.match(/\d+/) || [])[0]);
+            if (!isNaN(aN) && !isNaN(bN) && aN !== bN) return aN - bN;
+            return a.localeCompare(b);
+          })
+          .map(k => {
+            const name = k.replace(/\.pdf$/i, '');
+            const file = name.includes('.') ? name : `${name}.pdf`;
+            const properFile = file.toLowerCase().endsWith('.pdf') ? file : `${file}.pdf`;
+            return { name: name.toUpperCase(), file: properFile, url: `semesters/${properFile}` };
+          });
+        if (derived.length > 0) {
+          console.log('Using bundled config-derived fallback', derived);
+          return derived;
+        }
+      }
+    } catch (e) {
+      console.error('Bundled config-derived fallback failed', e);
+    }
+  }
+
+  // 5) Ultimate hardcoded fallback - never return []
   console.warn('Using hardcoded fallback');
   return HARDCODED_FALLBACK;
-
-  candidates.sort((a, b) => {
-    const aNum = Number((a.file.match(/\d+/) || [])[0]);
-    const bNum = Number((b.file.match(/\d+/) || [])[0]);
-    const aIsNum = !Number.isNaN(aNum);
-    const bIsNum = !Number.isNaN(bNum);
-    if (aIsNum && bIsNum) {
-      if (aNum !== bNum) return aNum - bNum;
-      return a.file.localeCompare(b.file);
-    }
-    if (aIsNum) return -1;
-    if (bIsNum) return 1;
-    return a.file.localeCompare(b.file);
-  });
-
-  return candidates.map(({ file, dir }) => ({
-    name: path.basename(file, path.extname(file)),
-    file: file,
-    url: dir ? `${dir}/${file}` : file
-  }));
 }
 
 module.exports = (req, res) => {
